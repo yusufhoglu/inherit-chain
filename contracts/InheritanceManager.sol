@@ -24,16 +24,19 @@ contract InheritanceManager is ReentrancyGuard, Ownable {
         uint256 requiredConfirmations;
         bool isActive;
         bool isDead;
+        uint256 confirmationCount;
     }
     
     mapping(address => Inheritance) public inheritances;
     
-    event InheritanceCreated(address indexed owner);
+    event InheritanceCreated(address indexed owner, uint256 requiredConfirmations);
     event BeneficiaryAdded(address indexed owner, address indexed beneficiary, uint256 share);
     event ValidatorAdded(address indexed owner, address indexed validator);
     event DeathConfirmed(address indexed owner, address indexed validator);
     event InheritanceDistributed(address indexed owner);
     event InheritanceCancelled(address indexed owner);
+    event InsufficientValidators(address indexed owner, uint256 currentValidators, uint256 requiredConfirmations);
+    event RequiredConfirmationsUpdated(address indexed owner, uint256 newRequiredConfirmations);
 
     modifier onlyValidator(address _owner) {
         bool isValidator = false;
@@ -47,15 +50,17 @@ contract InheritanceManager is ReentrancyGuard, Ownable {
         _;
     }
     
-    function createInheritance(uint256 _requiredConfirmations) external {
+    function createInheritance() public {
         require(!inheritances[msg.sender].isActive, "Inheritance already exists");
-        require(_requiredConfirmations > 0, "Required confirmations must be greater than 0");
         
-        inheritances[msg.sender].owner = msg.sender;
-        inheritances[msg.sender].requiredConfirmations = _requiredConfirmations;
-        inheritances[msg.sender].isActive = true;
+        Inheritance storage newInheritance = inheritances[msg.sender];
+        newInheritance.owner = msg.sender;
+        newInheritance.isActive = true;
+        newInheritance.isDead = false;
+        newInheritance.requiredConfirmations = 0;
+        newInheritance.confirmationCount = 0;
         
-        emit InheritanceCreated(msg.sender);
+        emit InheritanceCreated(msg.sender, 0);
     }
     
     function addBeneficiary(address _beneficiary, uint256 _share) external {
@@ -73,18 +78,29 @@ contract InheritanceManager is ReentrancyGuard, Ownable {
         emit BeneficiaryAdded(msg.sender, _beneficiary, _share);
     }
     
-    function addValidator(address _validator) external {
+    function addValidator(address _validator) public {
         require(inheritances[msg.sender].isActive, "Inheritance not created");
-        require(!inheritances[msg.sender].isDead, "Owner is declared dead");
         require(_validator != address(0), "Invalid validator address");
+        require(_validator != msg.sender, "Owner cannot be validator");
         
-        inheritances[msg.sender].validators.push(Validator({
+        // Aynı doğrulayıcının tekrar eklenmesini engelle
+        for(uint i = 0; i < inheritances[msg.sender].validators.length; i++) {
+            require(inheritances[msg.sender].validators[i].wallet != _validator, "Validator already exists");
+        }
+        
+        Validator memory newValidator = Validator({
             wallet: _validator,
             hasConfirmed: false,
             exists: true
-        }));
+        });
+        
+        inheritances[msg.sender].validators.push(newValidator);
+        
+        // Gerekli onay sayısını otomatik güncelle
+        inheritances[msg.sender].requiredConfirmations = inheritances[msg.sender].validators.length;
         
         emit ValidatorAdded(msg.sender, _validator);
+        emit RequiredConfirmationsUpdated(msg.sender, inheritances[msg.sender].validators.length);
     }
     
     function confirmDeath(address _owner) external onlyValidator(_owner) nonReentrant {
@@ -166,5 +182,14 @@ contract InheritanceManager is ReentrancyGuard, Ownable {
     function getValidatorConfirmation(address owner, uint256 index) public view returns (bool) {
         require(index < inheritances[owner].validators.length, "Invalid index");
         return inheritances[owner].validators[index].hasConfirmed;
+    }
+
+    function updateRequiredConfirmations(uint256 _newRequiredConfirmations) public {
+        require(inheritances[msg.sender].isActive, "Inheritance not created");
+        require(_newRequiredConfirmations > 0, "Required confirmations must be greater than 0");
+        require(_newRequiredConfirmations <= inheritances[msg.sender].validators.length, "Required confirmations cannot exceed validator count");
+        
+        inheritances[msg.sender].requiredConfirmations = _newRequiredConfirmations;
+        emit RequiredConfirmationsUpdated(msg.sender, _newRequiredConfirmations);
     }
 } 
