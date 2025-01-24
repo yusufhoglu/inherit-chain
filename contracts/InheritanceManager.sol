@@ -28,6 +28,7 @@ contract InheritanceManager is ReentrancyGuard, Ownable {
     }
     
     mapping(address => Inheritance) public inheritances;
+    address[] public allInheritances;
     
     event InheritanceCreated(address indexed owner, uint256 requiredConfirmations);
     event BeneficiaryAdded(address indexed owner, address indexed beneficiary, uint256 share);
@@ -59,6 +60,8 @@ contract InheritanceManager is ReentrancyGuard, Ownable {
         newInheritance.isDead = false;
         newInheritance.requiredConfirmations = 0;
         newInheritance.confirmationCount = 0;
+        
+        allInheritances.push(msg.sender);
         
         emit InheritanceCreated(msg.sender, 0);
     }
@@ -148,6 +151,15 @@ contract InheritanceManager is ReentrancyGuard, Ownable {
         require(inheritances[msg.sender].owner == msg.sender, "Not inheritance owner");
         require(!inheritances[msg.sender].isDead, "Cannot cancel after death confirmation");
         
+        // Diziyi güncelle
+        for (uint i = 0; i < allInheritances.length; i++) {
+            if (allInheritances[i] == msg.sender) {
+                allInheritances[i] = allInheritances[allInheritances.length - 1];
+                allInheritances.pop();
+                break;
+            }
+        }
+        
         delete inheritances[msg.sender];
         
         emit InheritanceCancelled(msg.sender);
@@ -191,5 +203,54 @@ contract InheritanceManager is ReentrancyGuard, Ownable {
         
         inheritances[msg.sender].requiredConfirmations = _newRequiredConfirmations;
         emit RequiredConfirmationsUpdated(msg.sender, _newRequiredConfirmations);
+    }
+
+    // Bir doğrulayıcının hangi miras planlarında doğrulayıcı olduğunu getiren fonksiyon
+    function getValidatorInheritances(address validator) public view returns (address[] memory) {
+        uint count = 0;
+        // Önce sayıyı bulalım
+        for (uint i = 0; i < allInheritances.length; i++) {
+            address owner = allInheritances[i];
+            if (isValidator(owner, validator)) {
+                count++;
+            }
+        }
+        
+        // Şimdi adresleri toplayalım
+        address[] memory validatorInheritances = new address[](count);
+        uint index = 0;
+        for (uint i = 0; i < allInheritances.length; i++) {
+            address owner = allInheritances[i];
+            if (isValidator(owner, validator)) {
+                validatorInheritances[index] = owner;
+                index++;
+            }
+        }
+        
+        return validatorInheritances;
+    }
+
+    // Bir doğrulayıcının belirli bir miras planındaki index'ini döndüren yardımcı fonksiyon
+    function getValidatorIndex(address owner, address validator) public view returns (uint) {
+        require(inheritances[owner].isActive, "Inheritance not found");
+        for (uint i = 0; i < inheritances[owner].validators.length; i++) {
+            if (inheritances[owner].validators[i].wallet == validator) {
+                return i;
+            }
+        }
+        revert("Validator not found");
+    }
+
+    // Bir adresin belirli bir miras planında doğrulayıcı olup olmadığını kontrol eden yardımcı fonksiyon
+    function isValidator(address owner, address validator) public view returns (bool) {
+        if (!inheritances[owner].isActive) {
+            return false;
+        }
+        for (uint i = 0; i < inheritances[owner].validators.length; i++) {
+            if (inheritances[owner].validators[i].wallet == validator) {
+                return true;
+            }
+        }
+        return false;
     }
 } 

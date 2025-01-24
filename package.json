@@ -17,5 +17,8 @@
     "ethereum-waffle": "^4.0.10",
     "ethers": "^5.7.2",
     "hardhat": "^2.22.18"
+  },
+  "dependencies": {
+    "react-router-dom": "^6.21.1"
   }
 }
