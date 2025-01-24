@@ -92,19 +92,13 @@ contract InheritanceManager {
         require(validatorAddress != address(0), "Invalid validator address");
         require(!inheritances[msg.sender].isDead, "Owner is dead");
         
-        // Check if validator is already added
-        for(uint256 i = 0; i < inheritances[msg.sender].validatorCount; i++) {
-            require(inheritances[msg.sender].validators[i].wallet != validatorAddress, "Validator already exists");
-        }
-
         uint256 index = inheritances[msg.sender].validatorCount;
         inheritances[msg.sender].validators[index] = Validator(validatorAddress, false);
         inheritances[msg.sender].validatorCount++;
         
-        if(inheritances[msg.sender].validatorCount < inheritances[msg.sender].requiredConfirmations) {
-            inheritances[msg.sender].requiredConfirmations = inheritances[msg.sender].validatorCount;
-        }
-
+        // Her yeni doğrulayıcı eklendiğinde, gerekli onay sayısını güncelle
+        inheritances[msg.sender].requiredConfirmations = inheritances[msg.sender].validatorCount;
+        
         emit ValidatorAdded(msg.sender, validatorAddress);
     }
 
@@ -134,7 +128,8 @@ contract InheritanceManager {
         
         emit DeathConfirmed(owner, msg.sender, inheritances[owner].confirmationCount);
 
-        if(inheritances[owner].confirmationCount >= inheritances[owner].requiredConfirmations) {
+        // Tüm doğrulayıcılar onayladığında miras dağıtılır
+        if(inheritances[owner].confirmationCount == inheritances[owner].validatorCount) {
             inheritances[owner].isDead = true;
             distributeFunds(owner);
         }
@@ -305,6 +300,24 @@ contract InheritanceManager {
             inheritance.totalShares,
             inheritance.totalAmount,
             address(this).balance
+        );
+    }
+
+    // Doğrulayıcı onay durumlarını getiren yeni fonksiyon
+    function getValidatorConfirmations(address owner) 
+        external 
+        view 
+        returns (
+            uint256 totalValidators,
+            uint256 confirmedCount,
+            uint256 requiredConfirmations
+        ) 
+    {
+        Inheritance storage inheritance = inheritances[owner];
+        return (
+            inheritance.validatorCount,
+            inheritance.confirmationCount,
+            inheritance.requiredConfirmations
         );
     }
 } 
