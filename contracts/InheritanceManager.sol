@@ -4,7 +4,7 @@ pragma solidity ^0.8.19;
 contract InheritanceManager {
     struct Beneficiary {
         address wallet;
-        uint256 share; // 100.00% = 10000
+        uint256 amount;  // share yerine direkt amount kullanacağız
     }
 
     struct Validator {
@@ -23,6 +23,7 @@ contract InheritanceManager {
         uint256 validatorCount;
         uint256 totalShares;
         bool distributed;
+        uint256 totalAmount;    // Toplam miras miktarı (wei cinsinden)
     }
 
     mapping(address => Inheritance) public inheritances;
@@ -30,7 +31,7 @@ contract InheritanceManager {
 
     // Events
     event InheritanceCreated(address indexed owner);
-    event BeneficiaryAdded(address indexed owner, address indexed beneficiary, uint256 share);
+    event BeneficiaryAdded(address indexed owner, address indexed beneficiary, uint256 amount);
     event ValidatorAdded(address indexed owner, address indexed validator);
     event DeathConfirmed(address indexed owner, address indexed validator, uint256 confirmationCount);
     event InheritanceDistributed(address indexed owner);
@@ -60,26 +61,28 @@ contract InheritanceManager {
         newInheritance.validatorCount = 0;
         newInheritance.totalShares = 0;
         newInheritance.distributed = false;
+        newInheritance.totalAmount = 0;
 
         allInheritances.push(msg.sender);
         emit InheritanceCreated(msg.sender);
     }
 
-    function addBeneficiary(address beneficiaryAddress, uint256 share) 
+    function addBeneficiary(address beneficiaryAddress, uint256 amount) 
         external 
+        payable  // fonksiyonu payable yapıyoruz
         onlyActiveInheritance(msg.sender) 
     {
         require(beneficiaryAddress != address(0), "Invalid beneficiary address");
-        require(share > 0 && share <= 10000, "Invalid share percentage");
-        require(inheritances[msg.sender].totalShares + share <= 10000, "Total shares cannot exceed 100%");
+        require(amount > 0, "Amount must be greater than 0");
+        require(msg.value == amount, "Must send exact amount for beneficiary");
         require(!inheritances[msg.sender].isDead, "Owner is dead");
 
         uint256 index = inheritances[msg.sender].beneficiaryCount;
-        inheritances[msg.sender].beneficiaries[index] = Beneficiary(beneficiaryAddress, share);
+        inheritances[msg.sender].beneficiaries[index] = Beneficiary(beneficiaryAddress, amount);
         inheritances[msg.sender].beneficiaryCount++;
-        inheritances[msg.sender].totalShares += share;
+        inheritances[msg.sender].totalAmount += amount;
 
-        emit BeneficiaryAdded(msg.sender, beneficiaryAddress, share);
+        emit BeneficiaryAdded(msg.sender, beneficiaryAddress, amount);
     }
 
     function addValidator(address validatorAddress) 
@@ -140,14 +143,11 @@ contract InheritanceManager {
     function distributeFunds(address owner) internal {
         require(!inheritances[owner].distributed, "Already distributed");
         
-        uint256 balance = address(this).balance;
-        require(balance > 0, "No funds to distribute");
-        
         for(uint256 i = 0; i < inheritances[owner].beneficiaryCount; i++) {
             address payable beneficiary = payable(inheritances[owner].beneficiaries[i].wallet);
-            uint256 share = (balance * inheritances[owner].beneficiaries[i].share) / 10000;
+            uint256 amount = inheritances[owner].beneficiaries[i].amount;
             
-            (bool success, ) = beneficiary.call{value: share}("");
+            (bool success, ) = beneficiary.call{value: amount}("");
             require(success, "Transfer failed");
         }
         
@@ -155,15 +155,23 @@ contract InheritanceManager {
         emit InheritanceDistributed(owner);
     }
 
+    // Miras bakiyesini görüntüleme fonksiyonu
+    function getInheritanceBalance() external view returns (uint256) {
+        require(inheritances[msg.sender].isActive, "No active inheritance found");
+        return address(this).balance;
+    }
+
     // View functions
     function getBeneficiary(address owner, uint256 index) 
         external 
         view 
-        returns (address wallet, uint256 share) 
+        returns (address wallet, uint256 amount) 
     {
-        require(index < inheritances[owner].beneficiaryCount, "Invalid index");
+        require(inheritances[owner].isActive, "Inheritance not found");
+        require(index < inheritances[owner].beneficiaryCount, "Beneficiary not found");
+        
         Beneficiary storage beneficiary = inheritances[owner].beneficiaries[index];
-        return (beneficiary.wallet, beneficiary.share);
+        return (beneficiary.wallet, beneficiary.amount);
     }
 
     function getBeneficiaryCount(address owner) 
@@ -275,5 +283,28 @@ contract InheritanceManager {
             }
         }
         return false;
+    }
+
+    // Miras miktarını gönderme fonksiyonu
+    function sendInheritanceAmount() external payable {
+        require(inheritances[msg.sender].isActive, "No active inheritance found");
+        require(!inheritances[msg.sender].isDead, "Owner is dead");
+        require(msg.value == inheritances[msg.sender].totalAmount, "Must send exact inheritance amount");
+    }
+
+    // Miras detaylarını görüntüleme fonksiyonu
+    function getInheritanceDetails() external view returns (
+        bool isActive,
+        uint256 totalShares,
+        uint256 totalAmount,
+        uint256 currentBalance
+    ) {
+        Inheritance storage inheritance = inheritances[msg.sender];
+        return (
+            inheritance.isActive,
+            inheritance.totalShares,
+            inheritance.totalAmount,
+            address(this).balance
+        );
     }
 } 
