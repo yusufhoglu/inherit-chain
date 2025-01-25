@@ -35,6 +35,7 @@ contract InheritanceManager {
     event ValidatorAdded(address indexed owner, address indexed validator);
     event DeathConfirmed(address indexed owner, address indexed validator, uint256 confirmationCount);
     event InheritanceDistributed(address indexed owner);
+    event InheritanceCancelled(address indexed owner);
 
     // Modifiers
     modifier onlyActiveInheritance(address owner) {
@@ -51,19 +52,21 @@ contract InheritanceManager {
     receive() external payable {}
 
     // Core functions
-    function createInheritance() external onlyOwner {
-        Inheritance storage newInheritance = inheritances[msg.sender];
-        newInheritance.isActive = true;
-        newInheritance.isDead = false;
-        newInheritance.confirmationCount = 0;
-        newInheritance.requiredConfirmations = 1;
-        newInheritance.beneficiaryCount = 0;
-        newInheritance.validatorCount = 0;
-        newInheritance.totalShares = 0;
-        newInheritance.distributed = false;
-        newInheritance.totalAmount = 0;
-
+    function createInheritance() external {
+        require(!inheritances[msg.sender].isActive, "Inheritance already exists");
+        
+        // Yeni miras planı oluştur
+        inheritances[msg.sender].isActive = true;
+        inheritances[msg.sender].isDead = false;
+        inheritances[msg.sender].confirmationCount = 0;
+        inheritances[msg.sender].requiredConfirmations = 0;
+        inheritances[msg.sender].beneficiaryCount = 0;
+        inheritances[msg.sender].validatorCount = 0;
+        inheritances[msg.sender].totalAmount = 0;
+        
+        // Diziye ekle
         allInheritances.push(msg.sender);
+        
         emit InheritanceCreated(msg.sender);
     }
 
@@ -319,5 +322,38 @@ contract InheritanceManager {
             inheritance.confirmationCount,
             inheritance.requiredConfirmations
         );
+    }
+
+    function cancelInheritance() 
+        external 
+        onlyActiveInheritance(msg.sender) 
+    {
+        require(!inheritances[msg.sender].isDead, "Owner is dead");
+        
+        // Varislere gönderilecek ETH varsa geri gönder
+        if(inheritances[msg.sender].totalAmount > 0) {
+            (bool success, ) = msg.sender.call{value: inheritances[msg.sender].totalAmount}("");
+            require(success, "ETH return failed");
+        }
+        
+        // Miras planını sıfırla
+        inheritances[msg.sender].isActive = false;
+        inheritances[msg.sender].isDead = false;
+        inheritances[msg.sender].confirmationCount = 0;
+        inheritances[msg.sender].requiredConfirmations = 0;
+        inheritances[msg.sender].beneficiaryCount = 0;
+        inheritances[msg.sender].validatorCount = 0;
+        inheritances[msg.sender].totalAmount = 0;
+        
+        // allInheritances dizisinden kaldır
+        for(uint256 i = 0; i < allInheritances.length; i++) {
+            if(allInheritances[i] == msg.sender) {
+                allInheritances[i] = allInheritances[allInheritances.length - 1];
+                allInheritances.pop();
+                break;
+            }
+        }
+        
+        emit InheritanceCancelled(msg.sender);
     }
 } 
