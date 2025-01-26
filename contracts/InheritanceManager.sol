@@ -1,195 +1,359 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.0;
+pragma solidity ^0.8.19;
 
-import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
-import "@openzeppelin/contracts/access/Ownable.sol";
-
-contract InheritanceManager is ReentrancyGuard, Ownable {
+contract InheritanceManager {
     struct Beneficiary {
         address wallet;
-        uint256 share; // Yüzdelik pay (100 = %1)
-        bool exists;
+        uint256 amount;  // share yerine direkt amount kullanacağız
     }
-    
+
     struct Validator {
         address wallet;
         bool hasConfirmed;
-        bool exists;
     }
-    
+
     struct Inheritance {
-        address owner;
-        Beneficiary[] beneficiaries;
-        Validator[] validators;
-        uint256 requiredConfirmations;
         bool isActive;
         bool isDead;
         uint256 confirmationCount;
+        uint256 requiredConfirmations;
+        mapping(uint256 => Beneficiary) beneficiaries;
+        uint256 beneficiaryCount;
+        mapping(uint256 => Validator) validators;
+        uint256 validatorCount;
+        uint256 totalShares;
+        bool distributed;
+        uint256 totalAmount;    // Toplam miras miktarı (wei cinsinden)
     }
-    
+
     mapping(address => Inheritance) public inheritances;
-    
-    event InheritanceCreated(address indexed owner, uint256 requiredConfirmations);
-    event BeneficiaryAdded(address indexed owner, address indexed beneficiary, uint256 share);
+    address[] public allInheritances;
+
+    // Events
+    event InheritanceCreated(address indexed owner);
+    event BeneficiaryAdded(address indexed owner, address indexed beneficiary, uint256 amount);
     event ValidatorAdded(address indexed owner, address indexed validator);
-    event DeathConfirmed(address indexed owner, address indexed validator);
+    event DeathConfirmed(address indexed owner, address indexed validator, uint256 confirmationCount);
     event InheritanceDistributed(address indexed owner);
     event InheritanceCancelled(address indexed owner);
-    event InsufficientValidators(address indexed owner, uint256 currentValidators, uint256 requiredConfirmations);
-    event RequiredConfirmationsUpdated(address indexed owner, uint256 newRequiredConfirmations);
 
-    modifier onlyValidator(address _owner) {
-        bool isValidator = false;
-        for(uint i = 0; i < inheritances[_owner].validators.length; i++) {
-            if(inheritances[_owner].validators[i].wallet == msg.sender) {
-                isValidator = true;
+    // Modifiers
+    modifier onlyActiveInheritance(address owner) {
+        require(inheritances[owner].isActive, "Inheritance not found or inactive");
+        _;
+    }
+
+    modifier onlyOwner() {
+        require(!inheritances[msg.sender].isActive, "Inheritance already exists");
+        _;
+    }
+
+    // Kontratın ETH alabilmesi için receive fonksiyonu ekliyoruz
+    receive() external payable {}
+
+    // Core functions
+    function createInheritance() external {
+        require(!inheritances[msg.sender].isActive, "Inheritance already exists");
+        
+        // Yeni miras planı oluştur
+        inheritances[msg.sender].isActive = true;
+        inheritances[msg.sender].isDead = false;
+        inheritances[msg.sender].confirmationCount = 0;
+        inheritances[msg.sender].requiredConfirmations = 0;
+        inheritances[msg.sender].beneficiaryCount = 0;
+        inheritances[msg.sender].validatorCount = 0;
+        inheritances[msg.sender].totalAmount = 0;
+        
+        // Diziye ekle
+        allInheritances.push(msg.sender);
+        
+        emit InheritanceCreated(msg.sender);
+    }
+
+    function addBeneficiary(address beneficiaryAddress, uint256 amount) 
+        external 
+        payable  // fonksiyonu payable yapıyoruz
+        onlyActiveInheritance(msg.sender) 
+    {
+        require(beneficiaryAddress != address(0), "Invalid beneficiary address");
+        require(amount > 0, "Amount must be greater than 0");
+        require(msg.value == amount, "Must send exact amount for beneficiary");
+        require(!inheritances[msg.sender].isDead, "Owner is dead");
+
+        uint256 index = inheritances[msg.sender].beneficiaryCount;
+        inheritances[msg.sender].beneficiaries[index] = Beneficiary(beneficiaryAddress, amount);
+        inheritances[msg.sender].beneficiaryCount++;
+        inheritances[msg.sender].totalAmount += amount;
+
+        emit BeneficiaryAdded(msg.sender, beneficiaryAddress, amount);
+    }
+
+    function addValidator(address validatorAddress) 
+        external 
+        onlyActiveInheritance(msg.sender) 
+    {
+        require(validatorAddress != address(0), "Invalid validator address");
+        require(!inheritances[msg.sender].isDead, "Owner is dead");
+        
+        uint256 index = inheritances[msg.sender].validatorCount;
+        inheritances[msg.sender].validators[index] = Validator(validatorAddress, false);
+        inheritances[msg.sender].validatorCount++;
+        
+        // Her yeni doğrulayıcı eklendiğinde, gerekli onay sayısını güncelle
+        inheritances[msg.sender].requiredConfirmations = inheritances[msg.sender].validatorCount;
+        
+        emit ValidatorAdded(msg.sender, validatorAddress);
+    }
+
+    function confirmDeath(address owner) 
+        external 
+        onlyActiveInheritance(owner) 
+    {
+        require(!inheritances[owner].isDead, "Death already confirmed");
+        require(inheritances[owner].beneficiaryCount > 0, "No beneficiaries added");
+        
+        uint256 validatorIndex;
+        bool validatorFound = false;
+        
+        for(uint256 i = 0; i < inheritances[owner].validatorCount; i++) {
+            if(inheritances[owner].validators[i].wallet == msg.sender) {
+                validatorIndex = i;
+                validatorFound = true;
                 break;
             }
         }
-        require(isValidator, "Caller is not a validator");
-        _;
-    }
-    
-    function createInheritance() public {
-        require(!inheritances[msg.sender].isActive, "Inheritance already exists");
         
-        Inheritance storage newInheritance = inheritances[msg.sender];
-        newInheritance.owner = msg.sender;
-        newInheritance.isActive = true;
-        newInheritance.isDead = false;
-        newInheritance.requiredConfirmations = 0;
-        newInheritance.confirmationCount = 0;
+        require(validatorFound, "Not a validator");
+        require(!inheritances[owner].validators[validatorIndex].hasConfirmed, "Already confirmed");
         
-        emit InheritanceCreated(msg.sender, 0);
-    }
-    
-    function addBeneficiary(address _beneficiary, uint256 _share) external {
-        require(inheritances[msg.sender].isActive, "Inheritance not created");
-        require(!inheritances[msg.sender].isDead, "Owner is declared dead");
-        require(_beneficiary != address(0), "Invalid beneficiary address");
-        require(_share > 0, "Share must be greater than 0");
+        inheritances[owner].validators[validatorIndex].hasConfirmed = true;
+        inheritances[owner].confirmationCount++;
         
-        inheritances[msg.sender].beneficiaries.push(Beneficiary({
-            wallet: _beneficiary,
-            share: _share,
-            exists: true
-        }));
-        
-        emit BeneficiaryAdded(msg.sender, _beneficiary, _share);
-    }
-    
-    function addValidator(address _validator) public {
-        require(inheritances[msg.sender].isActive, "Inheritance not created");
-        require(_validator != address(0), "Invalid validator address");
-        require(_validator != msg.sender, "Owner cannot be validator");
-        
-        // Aynı doğrulayıcının tekrar eklenmesini engelle
-        for(uint i = 0; i < inheritances[msg.sender].validators.length; i++) {
-            require(inheritances[msg.sender].validators[i].wallet != _validator, "Validator already exists");
+        emit DeathConfirmed(owner, msg.sender, inheritances[owner].confirmationCount);
+
+        // Tüm doğrulayıcılar onayladığında miras dağıtılır
+        if(inheritances[owner].confirmationCount == inheritances[owner].validatorCount) {
+            inheritances[owner].isDead = true;
+            distributeFunds(owner);
         }
-        
-        Validator memory newValidator = Validator({
-            wallet: _validator,
-            hasConfirmed: false,
-            exists: true
-        });
-        
-        inheritances[msg.sender].validators.push(newValidator);
-        
-        // Gerekli onay sayısını otomatik güncelle
-        inheritances[msg.sender].requiredConfirmations = inheritances[msg.sender].validators.length;
-        
-        emit ValidatorAdded(msg.sender, _validator);
-        emit RequiredConfirmationsUpdated(msg.sender, inheritances[msg.sender].validators.length);
-    }
-    
-    function confirmDeath(address _owner) external onlyValidator(_owner) nonReentrant {
-        require(inheritances[_owner].isActive, "Inheritance not created");
-        require(!inheritances[_owner].isDead, "Death already confirmed");
-        
-        uint256 confirmations = 0;
-        for(uint i = 0; i < inheritances[_owner].validators.length; i++) {
-            if(inheritances[_owner].validators[i].wallet == msg.sender) {
-                require(!inheritances[_owner].validators[i].hasConfirmed, "Already confirmed");
-                inheritances[_owner].validators[i].hasConfirmed = true;
-            }
-            if(inheritances[_owner].validators[i].hasConfirmed) {
-                confirmations++;
-            }
-        }
-        
-        if(confirmations >= inheritances[_owner].requiredConfirmations) {
-            inheritances[_owner].isDead = true;
-            distributeInheritance(_owner);
-        }
-        
-        emit DeathConfirmed(_owner, msg.sender);
-    }
-    
-    function distributeInheritance(address _owner) private {
-        uint256 totalBalance = address(this).balance;
-        uint256 totalShares = 0;
-        
-        for(uint i = 0; i < inheritances[_owner].beneficiaries.length; i++) {
-            totalShares += inheritances[_owner].beneficiaries[i].share;
-        }
-        
-        for(uint i = 0; i < inheritances[_owner].beneficiaries.length; i++) {
-            Beneficiary memory beneficiary = inheritances[_owner].beneficiaries[i];
-            uint256 amount = (totalBalance * beneficiary.share) / totalShares;
-            payable(beneficiary.wallet).transfer(amount);
-        }
-        
-        emit InheritanceDistributed(_owner);
     }
 
-    function cancelInheritance() external {
-        require(inheritances[msg.sender].isActive, "Inheritance not found");
-        require(inheritances[msg.sender].owner == msg.sender, "Not inheritance owner");
-        require(!inheritances[msg.sender].isDead, "Cannot cancel after death confirmation");
+    function distributeFunds(address owner) internal {
+        require(!inheritances[owner].distributed, "Already distributed");
         
-        delete inheritances[msg.sender];
+        for(uint256 i = 0; i < inheritances[owner].beneficiaryCount; i++) {
+            address payable beneficiary = payable(inheritances[owner].beneficiaries[i].wallet);
+            uint256 amount = inheritances[owner].beneficiaries[i].amount;
+            
+            (bool success, ) = beneficiary.call{value: amount}("");
+            require(success, "Transfer failed");
+        }
         
-        emit InheritanceCancelled(msg.sender);
-    }
-    
-    receive() external payable {}
-
-    // Varis sayısını getir
-    function getBeneficiaryCount(address owner) public view returns (uint256) {
-        return inheritances[owner].beneficiaries.length;
+        inheritances[owner].distributed = true;
+        emit InheritanceDistributed(owner);
     }
 
-    // Belirli bir varisi getir
-    function getBeneficiary(address owner, uint256 index) public view returns (address wallet, uint256 share) {
-        require(index < inheritances[owner].beneficiaries.length, "Invalid index");
-        Beneficiary memory beneficiary = inheritances[owner].beneficiaries[index];
-        return (beneficiary.wallet, beneficiary.share);
+    // Miras bakiyesini görüntüleme fonksiyonu
+    function getInheritanceBalance() external view returns (uint256) {
+        require(inheritances[msg.sender].isActive, "No active inheritance found");
+        return address(this).balance;
     }
 
-    // Doğrulayıcı sayısını getir
-    function getValidatorCount(address owner) public view returns (uint256) {
-        return inheritances[owner].validators.length;
+    // View functions
+    function getBeneficiary(address owner, uint256 index) 
+        external 
+        view 
+        returns (address wallet, uint256 amount) 
+    {
+        require(inheritances[owner].isActive, "Inheritance not found");
+        require(index < inheritances[owner].beneficiaryCount, "Beneficiary not found");
+        
+        Beneficiary storage beneficiary = inheritances[owner].beneficiaries[index];
+        return (beneficiary.wallet, beneficiary.amount);
     }
 
-    // Belirli bir doğrulayıcıyı getir
-    function getValidator(address owner, uint256 index) public view returns (address) {
-        require(index < inheritances[owner].validators.length, "Invalid index");
+    function getBeneficiaryCount(address owner) 
+        external 
+        view 
+        returns (uint256) 
+    {
+        return inheritances[owner].beneficiaryCount;
+    }
+
+    function getValidator(address owner, uint256 index) 
+        external 
+        view 
+        returns (address) 
+    {
+        require(index < inheritances[owner].validatorCount, "Invalid index");
         return inheritances[owner].validators[index].wallet;
     }
 
-    // Doğrulayıcının onay durumunu getir
-    function getValidatorConfirmation(address owner, uint256 index) public view returns (bool) {
-        require(index < inheritances[owner].validators.length, "Invalid index");
+    function getValidatorCount(address owner) 
+        external 
+        view 
+        returns (uint256) 
+    {
+        return inheritances[owner].validatorCount;
+    }
+
+    function getValidatorConfirmation(address owner, uint256 index) 
+        external 
+        view 
+        returns (bool) 
+    {
+        require(index < inheritances[owner].validatorCount, "Invalid index");
         return inheritances[owner].validators[index].hasConfirmed;
     }
 
-    function updateRequiredConfirmations(uint256 _newRequiredConfirmations) public {
-        require(inheritances[msg.sender].isActive, "Inheritance not created");
-        require(_newRequiredConfirmations > 0, "Required confirmations must be greater than 0");
-        require(_newRequiredConfirmations <= inheritances[msg.sender].validators.length, "Required confirmations cannot exceed validator count");
+    function getValidatorInheritances(address validator) 
+        external 
+        view 
+        returns (address[] memory) 
+    {
+        uint256 count = 0;
+        for (uint256 i = 0; i < allInheritances.length; i++) {
+            address owner = allInheritances[i];
+            if (isValidator(owner, validator)) {
+                count++;
+            }
+        }
         
-        inheritances[msg.sender].requiredConfirmations = _newRequiredConfirmations;
-        emit RequiredConfirmationsUpdated(msg.sender, _newRequiredConfirmations);
+        address[] memory validatorInheritances = new address[](count);
+        uint256 index = 0;
+        for (uint256 i = 0; i < allInheritances.length; i++) {
+            address owner = allInheritances[i];
+            if (isValidator(owner, validator)) {
+                validatorInheritances[index] = owner;
+                index++;
+            }
+        }
+        
+        return validatorInheritances;
+    }
+
+    function getValidatorIndex(address owner, address validator) 
+        external 
+        view 
+        returns (uint256) 
+    {
+        require(inheritances[owner].isActive, "Inheritance not found");
+        for (uint256 i = 0; i < inheritances[owner].validatorCount; i++) {
+            if (inheritances[owner].validators[i].wallet == validator) {
+                return i;
+            }
+        }
+        revert("Validator not found");
+    }
+
+    function getInheritanceStatus(address owner) 
+        external 
+        view 
+        returns (
+            bool isActive,
+            bool isDead,
+            uint256 confirmationCount,
+            uint256 requiredConfirmations,
+            bool distributed
+        ) 
+    {
+        Inheritance storage inheritance = inheritances[owner];
+        return (
+            inheritance.isActive,
+            inheritance.isDead,
+            inheritance.confirmationCount,
+            inheritance.requiredConfirmations,
+            inheritance.distributed
+        );
+    }
+
+    function isValidator(address owner, address validator) 
+        public 
+        view 
+        returns (bool) 
+    {
+        if (!inheritances[owner].isActive) {
+            return false;
+        }
+        for (uint256 i = 0; i < inheritances[owner].validatorCount; i++) {
+            if (inheritances[owner].validators[i].wallet == validator) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // Miras miktarını gönderme fonksiyonu
+    function sendInheritanceAmount() external payable {
+        require(inheritances[msg.sender].isActive, "No active inheritance found");
+        require(!inheritances[msg.sender].isDead, "Owner is dead");
+        require(msg.value == inheritances[msg.sender].totalAmount, "Must send exact inheritance amount");
+    }
+
+    // Miras detaylarını görüntüleme fonksiyonu
+    function getInheritanceDetails() external view returns (
+        bool isActive,
+        uint256 totalShares,
+        uint256 totalAmount,
+        uint256 currentBalance
+    ) {
+        Inheritance storage inheritance = inheritances[msg.sender];
+        return (
+            inheritance.isActive,
+            inheritance.totalShares,
+            inheritance.totalAmount,
+            address(this).balance
+        );
+    }
+
+    // Doğrulayıcı onay durumlarını getiren yeni fonksiyon
+    function getValidatorConfirmations(address owner) 
+        external 
+        view 
+        returns (
+            uint256 totalValidators,
+            uint256 confirmedCount,
+            uint256 requiredConfirmations
+        ) 
+    {
+        Inheritance storage inheritance = inheritances[owner];
+        return (
+            inheritance.validatorCount,
+            inheritance.confirmationCount,
+            inheritance.requiredConfirmations
+        );
+    }
+
+    function cancelInheritance() 
+        external 
+        onlyActiveInheritance(msg.sender) 
+    {
+        require(!inheritances[msg.sender].isDead, "Owner is dead");
+        
+        // Varislere gönderilecek ETH varsa geri gönder
+        if(inheritances[msg.sender].totalAmount > 0) {
+            (bool success, ) = msg.sender.call{value: inheritances[msg.sender].totalAmount}("");
+            require(success, "ETH return failed");
+        }
+        
+        // Miras planını sıfırla
+        inheritances[msg.sender].isActive = false;
+        inheritances[msg.sender].isDead = false;
+        inheritances[msg.sender].confirmationCount = 0;
+        inheritances[msg.sender].requiredConfirmations = 0;
+        inheritances[msg.sender].beneficiaryCount = 0;
+        inheritances[msg.sender].validatorCount = 0;
+        inheritances[msg.sender].totalAmount = 0;
+        
+        // allInheritances dizisinden kaldır
+        for(uint256 i = 0; i < allInheritances.length; i++) {
+            if(allInheritances[i] == msg.sender) {
+                allInheritances[i] = allInheritances[allInheritances.length - 1];
+                allInheritances.pop();
+                break;
+            }
+        }
+        
+        emit InheritanceCancelled(msg.sender);
     }
 } 
